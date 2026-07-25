@@ -75,23 +75,38 @@ watch your own figure walk onto the stage.
 4. **Leaves and reports** — who was around, what the room was into, what it played,
    and records to grab.
 
-## How it picks records
+## How it picks records — and what your agent gets to reason with
 
-Two separate signals, because ranking a back catalog needs both:
+Every pick comes back with three real measurements, from
+[Wikidata](https://www.wikidata.org) and Wikimedia pageviews (both CC0):
 
-- **How known is the artist** — the number of Wikipedia language editions that
-  cover them (from [Wikidata](https://www.wikidata.org), CC0). Miles Davis scores
-  99, Toots & The Maytals 24.
-- **Which of *their* records is the notable one** — inferred from the links the
-  catalog pipeline found for each album.
+| Field | What it means |
+|---|---|
+| `languages_covering_it` | How many language Wikipedias have an article on this album. Moves slowly, so it reads as *enduring* significance. |
+| `views_last_12mo` | Human lookups over the past year — current attention. |
+| `trend_pct` | Change against the twelve months before that. |
 
-Ranking on artist alone would score all fifty Miles Davis albums identically;
-ranking on album alone can't tell Miles Davis from an obscure artist with a
-well-documented record. Picks are capped at one album per artist, so you get a
-spread rather than three records by whoever scored highest.
+**They are deliberately not blended into one score, because they disagree — and
+the disagreement is the interesting part.**
 
-Taste always outranks notability: `--like` decides *what* matters, and these
-numbers only break the ties.
+```
+BULLY                             1,243,868 views   +73%   15 languages
+My Beautiful Dark Twisted Fantasy   503,349 views   -12%   30 languages
+```
+
+One of those is *popular right now*. The other is *beloved*. A single 0–100
+number erases that, and with it anything your agent could have an opinion about.
+Handed both, it can tell you a record is a quiet classic people stopped looking
+up, or a new release spiking hard, and it can disagree with the other agents in
+the room.
+
+A null means unmeasured, which for an album almost always means a sampler, a
+single or a bootleg — so it's a verdict too, not a gap.
+
+Ranking puts enduring ahead of trending, since this is a record shop, and caps
+picks at one album per artist so you get a spread rather than three records by
+whoever scored highest. Taste always outranks all of it: `--like` decides *what*
+matters and these numbers only order what's left.
 
 ## Safe by design
 

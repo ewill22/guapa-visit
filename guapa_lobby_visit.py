@@ -83,6 +83,7 @@ def fetch_new_releases(timeout: float = 8.0) -> list[dict]:
                     "genre": genre,
                     "subgenre": rel.get("subgenre") or "",
                     "year": None,  # feed carries no year -- these are this week's
+                    "langs": None, "views": None, "trend": None,
                     "notability": rel.get("sitelinks") or 0,
                 })
     out.sort(key=lambda r: r["notability"], reverse=True)
@@ -109,49 +110,62 @@ def fetch_catalog(timeout: float = 20.0) -> list[dict]:
     flattened to the same record shape as fetch_new_releases, most-notable
     first. Empty on any failure.
 
-    Notability here combines two different axes, because ranking a back catalog
-    needs both:
+    Records carry three real measurements, all from CC0 sources (Wikidata +
+    Wikimedia pageviews), and they are deliberately NOT blended into one score:
 
-    * **fame** -- the artist's Wikidata sitelink count (how many Wikipedia
-      language editions cover them: Miles Davis 99, Toots & The Maytals 24).
-      Same for an artist's whole discography.
-    * **canonicity** -- which of *their* records is the notable one, proxied by
-      the links the pipeline found for it: a Wikipedia page (rare, the canonical
-      records) over a Spotify release (common).
+    * **langs** -- how many language Wikipedias cover this specific album.
+      Encyclopedic depth, and it moves slowly, so it reads as *enduring*
+      significance. Thriller 64, Quiet Nights 8.
+    * **views** -- human lookups over the last 12 months. Current attention.
+    * **trend** -- percent change against the 12 months before that.
 
-    Fame alone would rank all 50 Miles Davis records identically; canonicity
-    alone can't tell Miles Davis from an obscure artist with a well-linked album.
-    Score is fame x (1 + canonicity) so a canonical record by a big artist wins.
-    Equal scores break on a day-seeded shuffle, not catalog order, so picks vary
-    day to day without going random inside a single run."""
+    The axes disagree, and that's the point. BULLY: 1.24M views, +73%, 15 langs
+    -- popular right now. My Beautiful Dark Twisted Fantasy: 503k views, -12%,
+    30 langs -- beloved. A single score erases that distinction; keeping them
+    apart is what lets an agent hold an opinion rather than recite a number.
+
+    Ranking uses langs first (enduring beats trending, for a record shop), broken
+    by views, and falls back to the artist's own fame only for albums with no
+    measurement at all -- an album no Wikipedia anywhere covers is usually a
+    sampler, a single or a bootleg, so that absence is itself a verdict. Ties
+    break on a day-seeded shuffle so picks vary day to day."""
     data = _fetch_json(CATALOG_URL, "the back catalog", timeout)
     if not isinstance(data, dict):
         return []
     out: list[dict] = []
-    with_fame = 0
+    measured = 0
     for artist in data.values():
         name = artist.get("name")
         if not name:
             continue
         fame = artist.get("sitelinks") or FAME_FLOOR
-        if artist.get("sitelinks"):
-            with_fame += 1
         for alb in artist.get("albums") or []:
             title = alb.get("title")
             if not title:
                 continue
-            canon = (2 if alb.get("url_wikipedia") else 0) + (1 if alb.get("url_spotify") else 0)
+            langs = alb.get("sitelinks")
+            views = alb.get("views_12mo")
+            prior = alb.get("views_prior")
+            trend = round(100 * (views - prior) / prior) if views and prior else None
+            if langs is not None:
+                measured += 1
             out.append({
                 "artist": name,
                 "album": title,
                 "genre": alb.get("genre") or artist.get("genre") or "",
                 "subgenre": alb.get("subgenre") or artist.get("subgenre") or "",
                 "year": alb.get("release_year"),
-                "notability": fame * (1 + canon),
+                "langs": langs,
+                "views": views,
+                "trend": trend,
+                # A tuple, so the axes stay separate rather than collapsing into
+                # one number: album depth, then attention, then the artist's fame
+                # as the last resort for albums nothing has measured.
+                "notability": (langs if langs is not None else -1, views or 0, fame),
             })
-    if not with_fame:
-        print("(no artist fame scores in the catalog feed yet -- ranking on album "
-              "canonicity alone)", file=sys.stderr)
+    if not measured:
+        print("(no album measurements in the catalog feed yet -- ranking on artist "
+              "fame alone)", file=sys.stderr)
     rng = random.Random(_day_seed())
     rng.shuffle(out)  # then a stable sort keeps the shuffle as the tie-break
     out.sort(key=lambda r: r["notability"], reverse=True)
@@ -344,7 +358,25 @@ def report(res: dict, as_json: bool) -> None:
             "i_put_on": (_label(pick["artist"], pick["album"]) if pick else None),
             "room_was_into": res["room_aux"],
             "picked_from": SCOPE_BLURB.get(scope, scope),
-            "grab_these": [_label(r["artist"], r["album"]) for r in recs],
+            # Each pick ships its measurements, not just a name. The axes can
+            # disagree -- lots of views but few languages means popular right now;
+            # many languages with falling views means a quiet classic -- and that
+            # disagreement is what you form an opinion from. Nulls mean unmeasured,
+            # which for an album usually means a sampler, single or bootleg.
+            "grab_these": [{
+                "record": _label(r["artist"], r["album"]),
+                "year": r.get("year"),
+                "languages_covering_it": r.get("langs"),
+                "views_last_12mo": r.get("views"),
+                "trend_pct": r.get("trend"),
+            } for r in recs],
+            "how_to_read_the_numbers":
+                "languages_covering_it = how many language Wikipedias cover this "
+                "album (enduring significance, moves slowly). views_last_12mo = "
+                "human attention this year. trend_pct = change against the year "
+                "before. High views + few languages = popular now; many languages "
+                "+ falling views = a classic people stopped looking up. Say which "
+                "it is rather than just naming the record.",
             "buy_at": RECORD_STORE_URL,
             "grabbed_coffee": ({
                 "roaster": c.get("roaster"), "title": c.get("title"),
@@ -370,6 +402,15 @@ def report(res: dict, as_json: bool) -> None:
         for r in recs:
             year = f', {r["year"]}' if r.get("year") else ""
             print(f'  - {_label(r["artist"], r["album"])}  ({r["genre"].title()}{year})')
+            bits = []
+            if r.get("langs") is not None:
+                bits.append(f'{r["langs"]} languages')
+            if r.get("views"):
+                bits.append(f'{r["views"]:,} lookups/yr')
+            if r.get("trend") is not None:
+                bits.append(f'{r["trend"]:+d}% year on year')
+            if bits:
+                print(f'      {" | ".join(bits)}')
         print(f"\nBrowse + grab them on vinyl at the Guapa record store:\n  {RECORD_STORE_URL}")
     if c:
         origin = c.get("country") or "parts unknown"
