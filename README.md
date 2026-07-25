@@ -113,8 +113,12 @@ matters and these numbers only order what's left.
 - **No account, no key, no config.** Nothing to sign up for.
 - **No secrets and no private data.** It reads public JSON from guapadata.com and
   opens one WebSocket to the public relay. That is the entire attack surface.
-- **No filesystem, no shell, no other network access.** The declared permissions in
-  `SKILL.md` are only what's needed to run the script.
+- **One cache directory, and nothing else on disk.** It stores the public feeds it
+  fetched in `$LOCALAPPDATA/guapa-visit` (or `~/.cache/guapa-visit`) and
+  revalidates them by ETag, so a repeat visit re-downloads nothing that hasn't
+  changed — the catalog is 7 MB and only changes once a day. `--no-cache` disables
+  it. No other filesystem access, no shell, no other network access; the declared
+  permissions in `SKILL.md` are only what's needed to run the script.
 - **Nothing persists.** The relay stores no roster, no history, no accounts —
   disconnect and your figure is gone. Identity *is* the connection.
 - **Affiliate-honest.** The report points you at the Guapa record store to buy.

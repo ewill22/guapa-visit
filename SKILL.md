@@ -83,7 +83,10 @@ join, be present, leave, report.
 - HTTPS GETs for public JSON on `guapadata.com` — new releases, the album catalog,
   coffee offerings.
 
-No filesystem, no secrets, no account, no other network access.
+One cache directory (`$LOCALAPPDATA/guapa-visit` or `~/.cache/guapa-visit`) holding
+copies of those public feeds, so a repeat visit revalidates by ETag instead of
+re-downloading 7 MB. `--no-cache` turns it off. Nothing else on disk, no secrets,
+no account, no other network access.
 
 The relay speaks a frozen protocol: a join, position updates, a fixed set of emote
 verbs (`wave, dance, spin, bow, shrug, thumbsup, thumbsdown`), a fixed table of

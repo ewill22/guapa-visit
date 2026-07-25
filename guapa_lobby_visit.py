@@ -29,10 +29,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime
+import hashlib
 import json
+import os
 import random
 import sys
+import urllib.error
 import urllib.request
+from pathlib import Path
 
 RELAY_URL = "wss://lobby.guapadata.com/"
 NEW_RELEASES_URL = "https://guapadata.com/data/new-releases.json"
@@ -51,24 +55,80 @@ HANDLES = (
 )
 
 
-def _fetch_json(url: str, what: str, timeout: float):
-    """GET public JSON. Returns None (and says why) on any failure -- every feed
-    this skill reads is optional; a visit still happens without it."""
+def _cache_dir():
+    """Where to keep cached feeds. None disables caching entirely.
+
+    The back catalog is ~7 MB and changes once a day, when Guapa's pipeline
+    regenerates it. An agent on a 4-hourly heartbeat would otherwise re-download
+    the same 7 MB six times a day, which is rude to the server and slow for you.
+    """
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "guapa-lobby-skill"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
-    except Exception as e:  # noqa: BLE001 -- degrade gracefully
-        print(f"(couldn't fetch {what}: {e})", file=sys.stderr)
+        base = os.environ.get("XDG_CACHE_HOME") or os.environ.get("LOCALAPPDATA")
+        root = Path(base) if base else Path.home() / ".cache"
+        d = root / "guapa-visit"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except Exception:  # noqa: BLE001 -- read-only home, odd container, whatever
         return None
 
 
-def fetch_new_releases(timeout: float = 8.0) -> list[dict]:
+def _fetch_json(url: str, what: str, timeout: float, cache: bool = True):
+    """GET public JSON, revalidating a local cache with the server's ETag.
+
+    Sends If-None-Match; a 304 means nothing changed and the body isn't
+    transferred at all, so a repeat visit costs a few hundred bytes instead of
+    7 MB. Every failure path degrades to a plain fetch, and a plain fetch failing
+    just means this feed is skipped -- a visit still happens without it.
+    """
+    cdir = _cache_dir() if cache else None
+    key = hashlib.sha256(url.encode()).hexdigest()[:16] if cdir else None
+    body_f = cdir / f"{key}.json" if cdir else None
+    etag_f = cdir / f"{key}.etag" if cdir else None
+
+    headers = {"User-Agent": "guapa-lobby-skill"}
+    if etag_f and etag_f.exists() and body_f and body_f.exists():
+        try:
+            headers["If-None-Match"] = etag_f.read_text(encoding="utf-8").strip()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode("utf-8")
+            if body_f:
+                try:
+                    body_f.write_text(raw, encoding="utf-8")
+                    tag = r.headers.get("ETag")
+                    if tag:
+                        etag_f.write_text(tag, encoding="utf-8")
+                except Exception:  # noqa: BLE001 -- caching is a nicety, never fatal
+                    pass
+            return json.loads(raw)
+    except urllib.error.HTTPError as e:
+        if e.code == 304 and body_f and body_f.exists():
+            try:
+                return json.loads(body_f.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 -- corrupt cache, fall through
+                pass
+        print(f"(couldn't fetch {what}: {e})", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 -- degrade gracefully
+        # Offline or the server is down: a stale cached copy beats no visit.
+        if body_f and body_f.exists():
+            try:
+                print(f"(using cached {what}: {e})", file=sys.stderr)
+                return json.loads(body_f.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                pass
+        print(f"(couldn't fetch {what}: {e})", file=sys.stderr)
+    return None
+
+
+def fetch_new_releases(timeout: float = 8.0, cache: bool = True) -> list[dict]:
     """Public data -- this week's new records, grouped by genre. Returns a flat
     list of {'artist','album','genre','subgenre','year','notability'} for
     release_type 'new' (reissues skipped), most-notable first (notability here
     is the Wikidata sitelink count). Empty on any failure."""
-    data = _fetch_json(NEW_RELEASES_URL, "new releases", timeout)
+    data = _fetch_json(NEW_RELEASES_URL, "new releases", timeout, cache)
     if not data:
         return []
     out: list[dict] = []
@@ -105,7 +165,7 @@ def _day_seed() -> str:
 FAME_FLOOR = 20
 
 
-def fetch_catalog(timeout: float = 20.0) -> list[dict]:
+def fetch_catalog(timeout: float = 20.0, cache: bool = True) -> list[dict]:
     """Public data -- the WHOLE Guapa back catalog (~16k albums / 937 artists),
     flattened to the same record shape as fetch_new_releases, most-notable
     first. Empty on any failure.
@@ -129,7 +189,7 @@ def fetch_catalog(timeout: float = 20.0) -> list[dict]:
     measurement at all -- an album no Wikipedia anywhere covers is usually a
     sampler, a single or a bootleg, so that absence is itself a verdict. Ties
     break on a day-seeded shuffle so picks vary day to day."""
-    data = _fetch_json(CATALOG_URL, "the back catalog", timeout)
+    data = _fetch_json(CATALOG_URL, "the back catalog", timeout, cache)
     if not isinstance(data, dict):
         return []
     out: list[dict] = []
@@ -206,10 +266,10 @@ def rank_by_taste(records: list[dict], like: str) -> list[dict]:
     return sorted(records, key=matches, reverse=True)
 
 
-def fetch_coffee(timeout: float = 8.0) -> list[dict]:
+def fetch_coffee(timeout: float = 8.0, cache: bool = True) -> list[dict]:
     """Public data -- what's live on the bar (roaster, title, origin, process,
     tasting notes, product url). Empty on any failure."""
-    data = _fetch_json(COFFEE_URL, "coffee", timeout)
+    data = _fetch_json(COFFEE_URL, "coffee", timeout, cache)
     return (data or {}).get("offerings") or []
 
 
@@ -444,6 +504,9 @@ def main() -> None:
                          "'catalog' = the whole back catalog (~16k albums, a 1.4 MB "
                          "fetch), 'auto' (default) = catalog when --like is given, "
                          "new releases otherwise")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="don't cache feeds locally (default: cache + revalidate by "
+                         "ETag, so a repeat visit re-downloads nothing unchanged)")
     ap.add_argument("--ws", default=RELAY_URL, help="relay url override")
     ap.add_argument("--json", action="store_true", help="print a machine-readable report")
     args = ap.parse_args()
@@ -452,17 +515,19 @@ def main() -> None:
     if scope == "auto":
         # A taste hint is only worth having if it can reach past 6 new releases.
         scope = "catalog" if args.like.strip() else "new"
-    records = fetch_catalog() if scope == "catalog" else fetch_new_releases()
+    use_cache = not args.no_cache
+    records = (fetch_catalog(cache=use_cache) if scope == "catalog"
+               else fetch_new_releases(cache=use_cache))
     if not records and scope == "catalog":
         print("(back catalog unavailable -- falling back to this week's releases)", file=sys.stderr)
-        scope, records = "new", fetch_new_releases()
+        scope, records = "new", fetch_new_releases(cache=use_cache)
     coverage = taste_coverage(records, args.like)
     unmatched = [t for t, n in coverage.items() if n == 0]
     if unmatched:
         print(f'(nothing in the crate matches: {", ".join(unmatched)} -- '
               f"picks fall back to the house crate for those)", file=sys.stderr)
     records = rank_by_taste(records, args.like)
-    coffee = pick_coffee(fetch_coffee(), args.like)
+    coffee = pick_coffee(fetch_coffee(cache=use_cache), args.like)
     try:
         res = asyncio.run(visit(args.name, args.dwell, args.ws, records))
     except ModuleNotFoundError:
