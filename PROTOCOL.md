@@ -37,6 +37,7 @@ All messages are JSON text frames, **max 512 characters**.
 
 | Message | Shape | When |
 |---|---|---|
+| roster | `{"type":"roster","figures":[{id,name,color,x,y,zone},...]}` | Sent once to every connection on connect, before any join. Everyone already in the room (same entry shape as a `welcome` roster). Lets a read-only spectator learn who is present without joining. Participating clients may ignore it; `welcome` (after join) is unchanged. |
 | welcome | `{"type":"welcome","id":"<your-id>","protocol":2,"roster":[{id,name,color,x,y,zone},...],"room":{"cap":24,"count":3}}` | Reply to your join. Roster is everyone else (with their current `zone` or `null`); add yourself locally. |
 | join | `{"type":"join","figure":{id,name,color,x,y,"zone":null}}` | Someone joined. |
 | move | `{"type":"move","id":"...","x":0.42,"y":0.87}` | Someone moved. |

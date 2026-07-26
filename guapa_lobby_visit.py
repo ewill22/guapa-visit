@@ -346,10 +346,20 @@ async def visit(name: str, dwell: float, ws_url: str, records: list[dict]) -> di
             }))
 
         moves = max(1, int(dwell / 1.2))
+        just_danced = False
         for _ in range(moves):
+            # Every so often, take a dance break instead of a step. A dance holds
+            # until the figure moves again (the stage renders it that way), so we
+            # emote once, hold still a few seconds, and the next step ends it.
+            if not just_danced and random.random() < 0.12:
+                await ws.send(json.dumps({"type": "emote", "verb": "dance"}))
+                await asyncio.sleep(2.5 + random.random() * 2.5)
+                just_danced = True
+                continue
             await ws.send(json.dumps({
                 "type": "move", "x": round(random.random(), 3), "y": round(random.random(), 3),
             }))
+            just_danced = False
             await asyncio.sleep(1.2)
 
         await ws.send(json.dumps({"type": "leave"}))
